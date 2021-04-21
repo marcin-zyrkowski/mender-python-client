@@ -158,7 +158,7 @@ class RemoteTerminal:
         thread_send.start()
 
     def _open_terminal(self):
-        if self._context.config.User:
+        try:
             self._master, self._slave = pty.openpty()
             self._shell = subprocess.Popen(
                 [self._context.config.ShellCommand, "-i"],
@@ -168,10 +168,12 @@ class RemoteTerminal:
                 stderr=self._slave,
                 user=self._context.config.User)
             log.debug(f"Open terminal as: {self._context.config.User}")
-        else:
-            # @fixme update config file path
-            log.debug('No user name in etc/mender/mender.conf')
-            return -1
+        except Exception as inst:
+            #@fixme: change path
+            log.debug("Cannot open terminal, possible wrong user name.")
+            log.debug("Please check it in etc/mender/mender.conf")
+            log.debug(f'Exception type: {type(inst)}')
+            log.debug(f'Exception {inst}')
 
     def run(self, context):
         self._context = context
