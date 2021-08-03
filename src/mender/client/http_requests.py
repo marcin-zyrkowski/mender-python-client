@@ -28,6 +28,7 @@ def http_request(method, server_url, **kwargs):
         requests.URLRequired,
         requests.TooManyRedirects,
         requests.Timeout,
+        requests.ReadTimeout,
     ) as e:
         raise MenderRequestsException(e) from e
     return request
