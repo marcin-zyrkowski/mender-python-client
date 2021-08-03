@@ -347,8 +347,10 @@ class ArtifactRollbackReboot(State):
 class ArtifactFailure(State):
     def run(self, context):
         log.info("Running the ArtifactFailure state...")
-        # return _UpdateDone()
-        raise UnsupportedState("ArtifactFailure is unhandled by the API client")
+        log.warning('The Artifact has not been properly downloaded due to lack of Internet access or a server failure.')
+        log.warning("The next attemp of the update will happen after the UpdatePollIntervalSeconds config variable.")
+        return _UpdateDone()
+        #raise UnsupportedState("ArtifactFailure is unhandled by the API client")
 
 
 class _UpdateDone(State):
@@ -370,6 +372,13 @@ class UpdateStateMachine(AuthorizedStateMachine):
         self.current_state = Download()
 
     def run(self, context):
+        """Here goes a hack: it is assumed that downlad would succeded
+         and the state would change to ArtifactInstall and that would do other things
+         in external system scripts while this client exits.
+         Still in real world scenario the download is failing
+         and changes the state to ArtifactFailure.
+         After returning from ArtifactFailure state we will need to return to IdleState
+         in AuthorizedStateMachine to let it go another chance after some time."""
         while self.current_state != _UpdateDone():
             self.current_state = self.current_state.run(context)
             time.sleep(1)
