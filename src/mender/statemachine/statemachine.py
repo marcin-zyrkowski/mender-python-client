@@ -372,7 +372,7 @@ class UpdateStateMachine(AuthorizedStateMachine):
         self.current_state = Download()
 
     def run(self, context):
-        """Here goes a hack: it is assumed that downlad would succeded
+        """Here goes a hack: it is assumed that download would succeded
          and the state would change to ArtifactInstall and that would do other things
          in external system scripts while this client exits.
          Still in real world scenario the download is failing
