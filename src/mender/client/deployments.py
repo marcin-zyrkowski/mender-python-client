@@ -15,9 +15,11 @@ import logging
 import os.path
 import re
 import time
+from datetime import datetime
 from typing import Dict, Optional
 
 import requests
+from urllib3.exceptions import SSLError
 
 from mender.client import HTTPUnathorized
 from mender.client.http_requests import MenderRequestsException, http_request
@@ -31,8 +33,12 @@ STATUS_SUCCESS = "success"
 STATUS_FAILURE = "failure"
 STATUS_DOWNLOADING = "downloading"
 
-DOWNLOAD_RESUME_MIN_INTERVAL = 60
-DOWNLOAD_RESUME_MAX_INTERVAL = 10 * 60
+DOWNLOAD_RESUME_MIN_INTERVAL_SECONDS = 60
+DOWNLOAD_RESUME_MAX_INTERVAL_SECONDS = 10 * 60
+
+DOWNLOAD_CHUNK_SIZE_BYTES = 1024 * 1024 // 8
+DONWLOAD_CONNECT_TIMEOUT_SECONDS = 3
+DONWLOAD_READ_TIMEOUT_SECONDS = 10
 
 
 class DeploymentDownloadFailed(Exception):
@@ -108,7 +114,7 @@ def request(
 
 def get_exponential_backoff_time(tried: int, max_interval: int) -> int:
     per_internal_attempts = 3
-    smallest_unit = DOWNLOAD_RESUME_MIN_INTERVAL
+    smallest_unit = DOWNLOAD_RESUME_MIN_INTERVAL_SECONDS
 
     interval = smallest_unit
     next_interval = interval
@@ -157,7 +163,7 @@ def parse_range_response(response: requests.Response, offset: int) -> bool:
         log.debug(f"Discarding {offset-new_offset} bytes")
         size_to_discard = offset - new_offset
         while size_to_discard > 0:
-            chunk_size = 1024 * 1024
+            chunk_size = DOWNLOAD_CHUNK_SIZE_BYTES
             if size_to_discard < chunk_size:
                 chunk_size = size_to_discard
             log.debug(f"Discarding chunk of  {chunk_size    } bytes")
@@ -197,9 +203,11 @@ def download_and_resume(
         pass
 
     # Loop  will try/except until download is complete or exhaust the retries
-    offset = 0
-    content_length = None
-    tried = 0
+    offset: int = 0
+    content_length: int = None
+    date_start = datetime.now()
+    tried: int = 0
+    chunk_no: int = 0
     while True:
         try:
             req_headers: Dict[str, str] = {}
@@ -212,6 +220,10 @@ def download_and_resume(
                 headers=req_headers,
                 stream=True,
                 verify=server_certificate or True,
+                timeout=(
+                    DONWLOAD_CONNECT_TIMEOUT_SECONDS,
+                    DONWLOAD_READ_TIMEOUT_SECONDS,
+                ),
             ) as response:
                 if not content_length:
                     content_length = int(str(response.headers.get("Content-Length")))
@@ -223,25 +235,70 @@ def download_and_resume(
                 log.debug(f"Opening file to write at offset {offset}")
                 with open(artifact_path, "rb+") as fh:
                     fh.seek(offset)
+                    date_past = datetime.now()
+                    date_start = datetime.now()
                     for data in response.iter_content(
-                        chunk_size=1024 * 1024
-                    ):  # 1MiB at a time
+                        chunk_size=DOWNLOAD_CHUNK_SIZE_BYTES
+                    ):  # 1 chunk at a time
                         if not data:
                             break
                         fh.write(data)
                         offset += len(data)
                         fh.flush()
+                        t_difference = datetime.now() - date_past
+                        t_diff_millis = (
+                            t_difference.seconds * 1000
+                            + t_difference.microseconds / 1000
+                        )
+                        speed = (
+                            DOWNLOAD_CHUNK_SIZE_BYTES * 8 / t_diff_millis * 1000 / 1024
+                        )
+                        log.debug(
+                            f"chunk: {chunk_no} data length: {len(data)} time passed: {t_diff_millis:.0f} millis speed {speed:.1f} Kbit/s"
+                        )
+                        date_past = datetime.now()
+                        chunk_no += 1
                 # Download completed in one go, return
-                log.debug(f"Got EOF. Wrote {offset} bytes. Total is {content_length}.")
+                t_difference = datetime.now() - date_start
+                t_diff_millis = (
+                    t_difference.seconds * 1000 + t_difference.microseconds / 1000
+                )
+                log.debug(
+                    f"Got EOF. Wrote {offset} bytes. Total is {content_length}. Time {t_diff_millis/1000:.2f} seconds"
+                )
                 if offset >= content_length:
                     return True
         except MenderRequestsException as e:
-            log.error(e)
-            log.debug(f"Got Error. Wrote {offset} bytes. Total is {content_length}.")
+            log.debug(e)
+            t_difference = datetime.now() - date_start
+            t_diff_millis = (
+                t_difference.seconds * 1000 + t_difference.microseconds / 1000
+            )
+            log.debug(
+                f"Got Error. Wrote {offset} bytes. Total is {content_length}. Time {t_diff_millis:.0f} milliseconds"
+            )
+        except requests.ConnectionError as e:
+            log.debug(e)
+            t_difference = datetime.now() - date_start
+            t_diff_millis = (
+                t_difference.seconds * 1000 + t_difference.microseconds / 1000
+            )
+            log.debug(
+                f"Got Error. Wrote {offset} bytes. Total is {content_length}. Time {t_diff_millis:.0f} milliseconds"
+            )
+        except SSLError as e:
+            log.debug(e)
+            t_difference = datetime.now() - date_start
+            t_diff_millis = (
+                t_difference.seconds * 1000 + t_difference.microseconds / 1000
+            )
+            log.debug(
+                f"Got Error. Wrote {offset} bytes. Total is {content_length}. Time {t_diff_millis:.0f} milliseconds"
+            )
 
         # Prepare for next attempt
         next_attempt_in = get_exponential_backoff_time(
-            tried, DOWNLOAD_RESUME_MAX_INTERVAL
+            tried, DOWNLOAD_RESUME_MAX_INTERVAL_SECONDS
         )
         tried += 1
         log.debug(f"Next attempt in {next_attempt_in} seconds, sleeping...")
@@ -275,8 +332,7 @@ def report(
         )
         if response.status_code != 204:
             log.error(
-                f"Failed to upload the deployment status '{status}',\
-                error: {response.status_code}: {response.reason}"
+                f"Failed to upload the deployment status '{status}' error: {response.status_code}: {response.reason}"
             )
             return False
         if status == STATUS_FAILURE:
@@ -297,12 +353,11 @@ def report(
                 + "/log",
                 headers=headers,
                 verify=server_certificate or True,
-                json={"messages": logdata,},
+                json={"messages": logdata},
             )
             if response.status_code != 204:
                 log.error(
-                    f"Failed to upload the deployment log,\
-                    error: {response.status_code}: {response.reason} {response.text}"
+                    f"Failed to upload the deployment log error: {response.status_code}: {response.reason} {response.text}"
                 )
                 return False
     except MenderRequestsException as e:

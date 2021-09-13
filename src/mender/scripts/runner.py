@@ -38,7 +38,7 @@ def run_sub_updater(deployment_id: str) -> int:
             [
                 f"{settings.PATHS.install_script}",
                 settings.PATHS.artifact_download + "/artifact.mender",
-            ],
+            ]
         )
         return INSTALL_SCRIPT_OK
     except PermissionError as e:

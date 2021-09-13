@@ -95,6 +95,4 @@ def add_sub_updater_log(log_file):
             "The log_file: %s was not found."
             + "No logs from the sub-updater will be reported."
         )
-        log.error(
-            log_str, log_file,
-        )
+        log.error(log_str, log_file)
