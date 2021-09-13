@@ -19,7 +19,7 @@ from datetime import datetime
 from typing import Dict, Optional
 
 import requests
-from urllib3.exceptions import SSLError
+from urllib3.exceptions import SSLError  # type: ignore
 
 from mender.client import HTTPUnathorized
 from mender.client.http_requests import MenderRequestsException, http_request
@@ -204,7 +204,7 @@ def download_and_resume(
 
     # Loop  will try/except until download is complete or exhaust the retries
     offset: int = 0
-    content_length: int = None
+    content_length = None
     date_start = datetime.now()
     tried: int = 0
     chunk_no: int = 0
